@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pixel Claw Machine</title>
+  <style>
+    body {
+      background: #333;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      justify-content: center;
+    }
+    canvas {
+      background: #111;
+      border: 5px solid #555;
+    }
+    /* Center the start button on top of the canvas */
+    #startButton {
+      position: absolute;
+      font-size: 24px;
+      padding: 10px 20px;
+      cursor: pointer;
+      z-index: 2;
+      bottom: 38%;
+    }
+    /* Optional: Hide the start button when not needed */
+    #startButton.hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <button id="startButton">Start Game</button>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+
+    // Game state variables
+    let gameRunning = false;
+    let gameOver = false;
+    let score = 0;
+
+    // Define the drop area (bottom left slot)
+    const dropArea = { 
+      x: 20, 
+      y: canvasHeight - 120, 
+      width: 120, 
+      height: 100 
+    };
+
+    // Claw object with properties and a state machine:
+    // States: "idle" (waiting at top with horizontal control), 
+    // "dropping" (vertical drop), 
+    // "waiting" (pause after reaching drop limit or grabbing an object),
+    // "toDrop" (moving to the drop area with the object),
+    // "rising" (retracting back to idle position).
+    const claw = {
+      x: canvasWidth / 2,
+      y: 50,
+      width: 30,
+      height: 20,
+      state: "idle",
+      speed: 5,          // Horizontal speed when idle.
+      dropSpeed: 4,      // Speed during the vertical drop.
+      retractSpeed: 4,   // Speed when moving towards drop area or retracting.
+      grabbedAnimal: null,
+      waitStart: 0       // Timestamp when entering the "waiting" state.
+    };
+
+    const WAIT_DURATION = 500; // Delay in milliseconds when pausing after drop.
+
+    // Stuffed animals appear in a pixel art style.
+    let animals = [];
+    const animalSize = 30;
+
+    class StuffedAnimal {
+      constructor(x, y, points, special = false) {
+        this.x = x;
+        this.y = y;
+        this.points = points;
+        this.special = special;
+        this.width = animalSize;
+        this.height = animalSize;
+        this.grabbed = false;
+      }
+      
+      draw(ctx) {
+        // Use flat design colors. Special animals get a gold-ish tone.
+        ctx.fillStyle = this.special ? "#FFCC00" : "#00AAFF";
+        ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+      }
+    }
+
+    // Function to spawn animals in random locations (ensure they’re inside the glass case).
+    function spawnAnimals() {
+      animals = [];
+      const numAnimals = 5;
+      for (let i = 0; i < numAnimals; i++) {
+        const x = Math.random() * (canvasWidth - 100) + 50;
+        const y = Math.random() * (canvasHeight - 250) + 150;
+        const basePoints = 100;
+        // Special animal appears with 10% probability.
+        const isSpecial = Math.random() < 0.1;
+        animals.push(new StuffedAnimal(x, y, basePoints, isSpecial));
+      }
+    }
+
+    // Basic rectangular collision detection.
+    function checkCollision(obj1, obj2) {
+      return !(obj1.x + obj1.width/2 < obj2.x - obj2.width/2 ||
+               obj1.x - obj1.width/2 > obj2.x + obj2.width/2 ||
+               obj1.y + obj1.height/2 < obj2.y - obj2.height/2 ||
+               obj1.y - obj1.height/2 > obj2.y + obj2.height/2);
+    }
+
+    // Handle key events only when the game is running and the claw is idle.
+    document.addEventListener("keydown", (e) => {
+      if (!gameRunning) return;
+      
+      if (claw.state === "idle") {
+        if (e.code === "ArrowLeft") {
+          // Prevent moving off the glass case.
+          claw.x = Math.max(claw.width/2 + 20, claw.x - claw.speed);
+        } else if (e.code === "ArrowRight") {
+          claw.x = Math.min(canvasWidth - claw.width/2 - 20, claw.x + claw.speed);
+        } else if (e.code === "Space") {
+          claw.state = "dropping";
+        }
+      }
+    });
+
+    // Update function – manages state transitions for the claw.
+    function update() {
+      if (!gameRunning) return;
+
+      switch (claw.state) {
+        case "idle":
+          // In idle, horizontal movement is handled by key events.
+          break;
+
+        case "dropping":
+          // Move the claw straight down.
+          claw.y += claw.dropSpeed;
+          // Check for collision with each stuffed animal.
+          for (let animal of animals) {
+            if (!animal.grabbed && checkCollision(
+                { x: claw.x, y: claw.y, width: claw.width, height: claw.height }, animal)) {
+              animal.grabbed = true;
+              claw.grabbedAnimal = animal;
+              claw.state = "waiting";
+              claw.waitStart = Date.now();
+              break;
+            }
+          }
+          // If the claw reaches a set drop limit without grabbing anything.
+          if (claw.y >= canvasHeight - 30 && claw.state === "dropping") {
+            claw.state = "waiting";
+            claw.waitStart = Date.now();
+          }
+          break;
+
+        case "waiting":
+          // Pause briefly (simulate holding the object or hesitating at the bottom).
+          if (Date.now() - claw.waitStart >= WAIT_DURATION) {
+            // If an object was grabbed, head for the drop slot.
+            if (claw.grabbedAnimal) {
+              claw.state = "toDrop";
+            } else {
+              // Otherwise, simply retract back to idle position.
+              claw.state = "rising";
+            }
+          }
+          break;
+
+        case "toDrop":
+          // Move toward the center of the drop area.
+          let targetX = dropArea.x + dropArea.width / 2;
+          let targetY = dropArea.y + dropArea.height / 2;
+          let dx = targetX - claw.x;
+          let dy = targetY - claw.y;
+          let distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance > 4) {
+            claw.x += (dx / distance) * claw.retractSpeed;
+            claw.y += (dy / distance) * claw.retractSpeed;
+            // If holding an animal, keep it attached beneath the claw.
+            if (claw.grabbedAnimal) {
+              claw.grabbedAnimal.x = claw.x;
+              claw.grabbedAnimal.y = claw.y + claw.height;
+            }
+          } else {
+            // When the claw reaches the drop area, drop the animal and add to score.
+            if (claw.grabbedAnimal) {
+              let earned = claw.grabbedAnimal.points;
+              if (claw.grabbedAnimal.special) earned *= 2;
+              score += earned;
+              // Remove the animal from the arena.
+              animals = animals.filter(animal => animal !== claw.grabbedAnimal);
+              claw.grabbedAnimal = null;
+            }
+            // Now, retract the claw from the drop area.
+            claw.state = "rising";
+          }
+          break;
+
+        case "rising":
+          // Move from current position (drop area) back to the top center (idle position).
+          let idleX = canvasWidth / 2;
+          let idleY = 50;
+          let dx2 = idleX - claw.x;
+          let dy2 = idleY - claw.y;
+          let distance2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+          if (distance2 > 4) {
+            claw.x += (dx2 / distance2) * claw.retractSpeed;
+            claw.y += (dy2 / distance2) * claw.retractSpeed;
+          } else {
+            // Once retracted, reset the claw.
+            claw.x = idleX;
+            claw.y = idleY;
+            claw.state = "idle";
+            // End the game if all stuffed animals have been picked up.
+            if (animals.length === 0) {
+              gameRunning = false;
+              gameOver = true;
+            }
+          }
+          break;
+      }
+    }
+
+    // Render the game scene.
+    function render() {
+      // Clear the canvas.
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+      
+      // Draw the glass case.
+      ctx.strokeStyle = "#AAAAAA";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(20, 20, canvasWidth - 40, canvasHeight - 40);
+      
+      // Draw the drop area.
+      ctx.fillStyle = "rgba(50, 205, 50, 0.3)";
+      ctx.fillRect(dropArea.x, dropArea.y, dropArea.width, dropArea.height);
+      ctx.strokeStyle = "#32CD32";
+      ctx.strokeRect(dropArea.x, dropArea.y, dropArea.width, dropArea.height);
+      
+      // Draw each stuffed animal.
+      animals.forEach(animal => {
+        if (!animal.grabbed) animal.draw(ctx);
+      });
+      
+      // Draw the claw.
+      ctx.fillStyle = "#CCCCCC";
+      ctx.fillRect(claw.x - claw.width / 2, claw.y - claw.height / 2, claw.width, claw.height);
+      
+      // Draw the rope from top of the case to the claw.
+      ctx.strokeStyle = "#888888";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(claw.x, 20);
+      ctx.lineTo(claw.x, claw.y - claw.height / 2);
+      ctx.stroke();
+      
+      // If holding an animal, draw it (it follows under the claw).
+      if (claw.grabbedAnimal) {
+        claw.grabbedAnimal.draw(ctx);
+      }
+      
+      // Display the current score.
+      ctx.fillStyle = "#FFF";
+      ctx.font = "20px Monospace";
+      ctx.fillText("Score: " + score, canvasWidth - 140, 40);
+
+      // If game is over, overlay a translucent game-over screen.
+      if (gameOver) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "40px Monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("Game Over", canvasWidth / 2, canvasHeight / 2 - 20);
+        ctx.font = "30px Monospace";
+        ctx.fillText("Final Score: " + score, canvasWidth / 2, canvasHeight / 2 + 20);
+        // Optionally, show the start button again to allow a restart.
+        document.getElementById("startButton").textContent = "Restart Game";
+        document.getElementById("startButton").classList.remove("hidden");
+      }
+    }
+
+    // Main game loop.
+    function gameLoop() {
+      update();
+      render();
+      if (!gameOver) {
+        requestAnimationFrame(gameLoop);
+      }
+    }
+
+    // Start button event – (re)initializes the game.
+    document.getElementById("startButton").addEventListener("click", () => {
+      score = 0;
+      gameOver = false;
+      gameRunning = true;
+      // Reset the claw to the idle (top center) position.
+      claw.x = canvasWidth / 2;
+      claw.y = 50;
+      claw.state = "idle";
+      claw.grabbedAnimal = null;
+      spawnAnimals();
+      // Hide the button once the game starts.
+      document.getElementById("startButton").classList.add("hidden");
+      gameLoop();
+    });
+  </script>
+</body>
+</html>
